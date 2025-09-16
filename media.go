@@ -7,16 +7,28 @@ package vlc
 #include <string.h>
 
 extern int mediaBufferOpenCB(void* opaque, void** datap, uint64_t* sizep);
+extern int rmediaBufferOpenCB(void* opaque, void** datap, uint64_t* sizep);
+
 extern ssize_t mediaBufferReadCB(void* opaque, unsigned char* buf, size_t len);
+extern ssize_t rmediaBufferReadCB(void* opaque, unsigned char* buf, size_t len);
+
 extern int mediaBufferSeekCB(void* opaque, uint64_t offset);
 extern void mediaBufferCloseCB(void* opaque);
 
 static inline libvlc_media_open_cb media_open_cb_wrapper() {
 	return mediaBufferOpenCB;
 }
+static inline libvlc_media_open_cb media_ropen_cb_wrapper() {
+	return rmediaBufferOpenCB;
+}
+
 static inline libvlc_media_read_cb media_read_cb_wrapper() {
 	return mediaBufferReadCB;
 }
+static inline libvlc_media_read_cb media_rread_cb_wrapper() {
+	return rmediaBufferReadCB;
+}
+
 static inline libvlc_media_seek_cb media_seek_cb_wrapper() {
 	return mediaBufferSeekCB;
 }
@@ -263,6 +275,27 @@ func NewMediaFromReadSeeker(r io.ReadSeeker) (*Media, error) {
 	m := &Media{media: cMedia}
 	m.setUserData(&mediaData{readerID: readerID})
 
+	return m, nil
+}
+
+func NewMediaFromReader(r io.Reader) (*Media, error) {
+	if err := inst.assertInit(); err != nil {
+		return nil, err
+	}
+
+	//Create media
+	readerID := inst.objects.add(r)
+	cMedia := C.libvlc_media_new_callbacks(
+		inst.handle,
+		C.media_ropen_cb_wrapper(),
+		C.media_rread_cb_wrapper(),
+		nil,
+		C.media_close_cb_wrapper(),
+		readerID,
+	)
+
+	m := &Media{media: cMedia}
+	m.setUserData(&mediaData{readerID: readerID})
 	return m, nil
 }
 
@@ -771,6 +804,24 @@ func newMedia(path string, local bool) (*Media, error) {
 	return &Media{media: media}, nil
 }
 
+func getMediaReader(id objectID) (io.Reader, error) {
+	if err := inst.assertInit(); err != nil {
+		return nil, err
+	}
+
+	obj, ok := inst.objects.get(id)
+	if !ok {
+		return nil, ErrMediaNotInitialized
+	}
+
+	r, _ := obj.(io.Reader)
+	if r == nil {
+		return nil, ErrMediaNotInitialized
+	}
+
+	return r, nil
+}
+
 func getMediaReadSeeker(id objectID) (io.ReadSeeker, error) {
 	if err := inst.assertInit(); err != nil {
 		return nil, err
@@ -814,6 +865,23 @@ func mediaBufferOpenCB(id unsafe.Pointer, userData *unsafe.Pointer, size *C.uint
 	return 0
 }
 
+//export rmediaBufferOpenCB
+func rmediaBufferOpenCB(id unsafe.Pointer, userData *unsafe.Pointer, size *C.uint64_t) C.int {
+	// Get media reader.
+	_, err := getMediaReader(id)
+	if err != nil {
+		return 1
+	}
+
+	// Get reader size.
+	var offset uint64 = math.MaxUint64
+
+	// Initialize callback data.
+	*userData = id
+	*size = C.uint64_t(offset)
+	return 0
+}
+
 //export mediaBufferReadCB
 func mediaBufferReadCB(id unsafe.Pointer, buf *C.uchar, size C.size_t) C.ssize_t {
 	// Get media reader.
@@ -833,6 +901,30 @@ func mediaBufferReadCB(id unsafe.Pointer, buf *C.uchar, size C.size_t) C.ssize_t
 	}
 
 	// Copy data to buffer.
+	if read > 0 {
+		C.memcpy(unsafe.Pointer(buf), unsafe.Pointer(&b[0]), C.size_t(read))
+	}
+
+	return C.ssize_t(read)
+}
+
+//export rmediaBufferReadCB
+func rmediaBufferReadCB(id unsafe.Pointer, buf *C.uchar, size C.size_t) C.ssize_t {
+	// Get media reader.
+	r, err := getMediaReader(id)
+	if err != nil {
+		return -1
+	}
+
+	b := make([]byte, int(size))
+
+	read, err := r.Read(b)
+	if err != nil {
+		if err != io.EOF {
+			read = -1
+		}
+	}
+
 	if read > 0 {
 		C.memcpy(unsafe.Pointer(buf), unsafe.Pointer(&b[0]), C.size_t(read))
 	}
