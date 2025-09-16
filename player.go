@@ -410,6 +410,20 @@ func (p *Player) LoadMediaFromReadSeeker(r io.ReadSeeker) (*Media, error) {
 	return m, nil
 }
 
+func (p *Player) LoadMediaFromReader(r io.Reader) (*Media, error) {
+	m, err := NewMediaFromReader(r)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = p.setMedia(m); err != nil {
+		m.release()
+		return nil, err
+	}
+
+	return m, nil
+}
+
 // SetAudioOutput sets the audio output to be used by the player. Any change
 // will take effect only after playback is stopped and restarted. The audio
 // output cannot be changed while playing.
